@@ -1,0 +1,320 @@
+/************************************************************
+ * Wildfire Dataset Generation (Tamil Nadu + Karnataka)
+ * Google Earth Engine Script
+ *
+ * Generates the datasets used in the final notebook:
+ *
+ * 1. ntl2.tif
+ * 2. forest.tif
+ * 3. fire_labels2.tif
+ * 4. NDVI_TN_KA.tif
+ * 5. RoadDensity_TN_KA_2.tif
+ * 6. builtup_density_TN_KA.tif
+ * 7. fragmentation.tif
+ * 8. aspect_TN_KA.tif
+ * 9. VPD_TN_KA_FIXED.tif
+ ************************************************************/
+
+
+//====================================================
+// STUDY AREA
+//====================================================
+
+var india = ee.FeatureCollection("FAO/GAUL/2015/level1");
+
+var region = india.filter(
+  ee.Filter.or(
+    ee.Filter.eq('ADM1_NAME', 'Tamil Nadu'),
+    ee.Filter.eq('ADM1_NAME', 'Karnataka')
+  )
+);
+
+var region_geom = region.union().geometry();
+
+Map.centerObject(region,6);
+
+
+
+//====================================================
+// ESA WORLDCOVER (Used for Forest + Built-up)
+//====================================================
+
+var worldcover = ee.Image("ESA/WorldCover/v100/2020")
+                    .select("Map")
+                    .clip(region_geom);
+
+
+
+//====================================================
+// 1. NIGHTTIME LIGHTS (VIIRS)
+//====================================================
+
+var ntl = ee.ImageCollection("NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG")
+              .filterDate('2023-01-01','2023-12-31')
+              .mean()
+              .select('avg_rad')
+              .clip(region_geom);
+
+var ntl_norm = ntl.unitScale(0,60);
+
+Map.addLayer(
+  ntl_norm,
+  {min:0,max:1},
+  "Nighttime Lights"
+);
+
+Export.image.toDrive({
+  image: ntl_norm,
+  description: 'ntl2',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 2. FOREST MASK
+//====================================================
+
+var forest = worldcover.eq(10);
+
+Map.addLayer(
+  forest,
+  {palette:["white","green"]},
+  "Forest"
+);
+
+Export.image.toDrive({
+  image: forest,
+  description: 'forest',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 3. FIRE LABELS (MODIS)
+//====================================================
+
+var fires = ee.ImageCollection("MODIS/061/MOD14A1")
+                .filterDate('2023-01-01','2023-12-31')
+                .select('FireMask')
+                .max()
+                .clip(region_geom);
+
+var fire_raster = fires.gt(6);
+
+Map.addLayer(
+  fire_raster,
+  {palette:["black","red"]},
+  "Fire Labels"
+);
+
+Export.image.toDrive({
+  image: fire_raster,
+  description: 'fire_labels2',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 4. NDVI
+//====================================================
+
+var ndvi = ee.ImageCollection("MODIS/061/MOD13Q1")
+              .filterBounds(region_geom)
+              .filterDate('2020-01-01','2020-12-31')
+              .select("NDVI")
+              .mean()
+              .multiply(0.0001)
+              .clip(region_geom);
+
+Map.addLayer(
+  ndvi,
+  {
+    min:0,
+    max:1,
+    palette:['brown','yellow','green']
+  },
+  "NDVI"
+);
+
+Export.image.toDrive({
+  image: ndvi,
+  description: 'NDVI_TN_KA',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 5. ROAD DENSITY (OpenStreetMap)
+//====================================================
+
+var roads = ee.FeatureCollection(
+  "projects/sat-io/open-datasets/OSM/roads"
+).filterBounds(region_geom);
+
+var roadRaster = roads.reduceToImage({
+    properties:[],
+    reducer:ee.Reducer.constant(1)
+}).unmask(0);
+
+var roadDensity = roadRaster.focalMean({
+    radius:1000,
+    units:'meters'
+});
+
+roadDensity = roadDensity.unitScale(0,5);
+
+Map.addLayer(
+  roadDensity,
+  {min:0,max:1},
+  "Road Density"
+);
+
+Export.image.toDrive({
+  image: roadDensity,
+  description: 'RoadDensity_TN_KA_2',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 6. BUILT-UP DENSITY
+//====================================================
+
+var builtup = worldcover.eq(50);
+
+var builtDensity = builtup.focalMean({
+    radius:1000,
+    units:'meters'
+});
+
+Map.addLayer(
+  builtDensity,
+  {min:0,max:1},
+  "Built-up Density"
+);
+
+Export.image.toDrive({
+  image: builtDensity,
+  description: 'builtup_density_TN_KA',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 7. FOREST FRAGMENTATION
+//====================================================
+
+var fragmentation = forest.focalStd({
+    radius:500,
+    units:'meters'
+});
+
+Map.addLayer(
+  fragmentation,
+  {},
+  "Fragmentation"
+);
+
+Export.image.toDrive({
+  image: fragmentation,
+  description: 'fragmentation',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 8. ASPECT (SRTM)
+//====================================================
+
+var dem = ee.Image("USGS/SRTMGL1_003")
+              .clip(region_geom);
+
+var aspect = ee.Terrain.aspect(dem);
+
+Map.addLayer(
+  aspect,
+  {
+    min:0,
+    max:360
+  },
+  "Aspect"
+);
+
+Export.image.toDrive({
+  image: aspect,
+  description: 'aspect_TN_KA',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// 9. VPD (ERA5-Land)
+//====================================================
+
+var era = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+              .filterDate('2023-01-01','2023-12-31');
+
+var temp = era.select("temperature_2m").mean();
+
+var dew = era.select("dewpoint_temperature_2m").mean();
+
+var saturation = temp.expression(
+'0.6108 * exp((17.27*(T-273.15))/((T-273.15)+237.3))',
+{
+  T:temp
+});
+
+var actual = dew.expression(
+'0.6108 * exp((17.27*(Td-273.15))/((Td-273.15)+237.3))',
+{
+  Td:dew
+});
+
+var vpd = saturation.subtract(actual)
+                    .clip(region_geom);
+
+Map.addLayer(
+  vpd,
+  {},
+  "VPD"
+);
+
+Export.image.toDrive({
+  image: vpd,
+  description: 'VPD_TN_KA_FIXED',
+  region: region_geom,
+  scale: 500,
+  maxPixels: 1e13
+});
+
+
+
+//====================================================
+// FINISHED
+//====================================================
+
+print("All wildfire datasets are ready for export.");
